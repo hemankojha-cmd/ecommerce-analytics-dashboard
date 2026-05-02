@@ -5,7 +5,50 @@ from fpdf import FPDF
 import hashlib
 import sqlite3
 
-st.set_page_config(page_title="Universal Data Dashboard", layout="wide")
+st.set_page_config(page_title="AI Data Dashboard", layout="wide")
+
+# ---------------- THEME (FIXED) ----------------
+theme = st.sidebar.selectbox("🎨 Theme", ["Light", "Dark"])
+
+if theme == "Dark":
+    st.markdown("""
+        <style>
+        .stApp {
+            background-color: #0E1117;
+            color: white;
+        }
+
+        section[data-testid="stSidebar"] {
+            background-color: #161A25;
+        }
+
+        h1, h2, h3, h4, h5, h6, p, div {
+            color: white !important;
+        }
+
+        .stMetric {
+            color: white;
+        }
+
+        div[data-testid="stMetricValue"] {
+            color: #00FFAA;
+        }
+
+        .stDataFrame, .stTable {
+            background-color: #111;
+        }
+
+        input, textarea {
+            background-color: #222 !important;
+            color: white !important;
+        }
+
+        div[data-baseweb="select"] {
+            background-color: #222 !important;
+            color: white !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
 
 # ---------------- DATABASE ----------------
 conn = sqlite3.connect("users.db", check_same_thread=False)
@@ -43,13 +86,12 @@ def login_user(username, password):
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
-# ---------------- LOGIN UI ----------------
+# ---------------- LOGIN ----------------
 if not st.session_state.logged_in:
 
     st.title("🔐 Login / Register")
 
     menu = st.radio("Select", ["Login", "Register"])
-
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
 
@@ -58,152 +100,159 @@ if not st.session_state.logged_in:
             if len(username) < 3:
                 st.warning("Username too short")
             elif len(password) < 4:
-                st.warning("Password too weak")
+                st.warning("Weak password")
             else:
-                result = create_user(username, password)
-                if result == "success":
+                res = create_user(username, password)
+                if res == "success":
                     st.success("✅ Account Created")
                 else:
-                    st.warning("⚠ Username already exists")
+                    st.warning("⚠ User already exists")
 
     else:
         if st.button("Login"):
             if login_user(username, password):
                 st.session_state.logged_in = True
-                st.success("✅ Logged in")
                 st.rerun()
             else:
                 st.error("❌ Invalid credentials")
 
     st.stop()
 
+# ---------------- UNIVERSAL FILE LOADER ----------------
+def load_file(file):
+    try:
+        if file.name.endswith(".xlsx"):
+            return pd.read_excel(file)
+    except:
+        pass
+
+    encodings = ["utf-8", "latin1", "cp1252", "ISO-8859-1"]
+
+    for enc in encodings:
+        try:
+            return pd.read_csv(file, encoding=enc, sep=None, engine="python")
+        except:
+            file.seek(0)
+
+    raise ValueError("File not supported")
+
+# ---------------- PDF FIX ----------------
+def clean_text(text):
+    return text.encode("latin-1", "ignore").decode("latin-1")
+
 # ---------------- MAIN APP ----------------
+st.title("📊 AI-Powered Universal Data Dashboard")
 
-st.title("📊 Universal CSV Analytics Dashboard")
-
-uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
+uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
 
 if uploaded_file is not None:
 
-    df = pd.read_csv(uploaded_file)
+    try:
+        df = load_file(uploaded_file)
+    except:
+        st.error("❌ Could not read file")
+        st.stop()
 
-    # ---------------- CLEANING ----------------
+    # CLEANING
     df = df.loc[:, ~df.columns.str.contains("^Unnamed", case=False)]
     df = df.loc[:, ~df.columns.duplicated()]
     df.columns = df.columns.str.strip()
     df = df.reset_index(drop=True)
 
-    st.success("✅ Data Loaded")
+    st.success("✅ Data Loaded Successfully")
 
-    # ---------------- COLUMN SELECT ----------------
+    # COLUMN SELECT
     all_cols = df.columns.tolist()
-
-    date_col = st.selectbox("Select Date Column (optional)", ["None"] + all_cols)
     num_cols = df.select_dtypes(include=['number']).columns.tolist()
     cat_cols = df.select_dtypes(include=['object']).columns.tolist()
 
-    revenue_col = st.selectbox("Select Revenue Column", num_cols if num_cols else all_cols)
-    category_col = st.selectbox("Select Category Column", cat_cols if cat_cols else all_cols)
+    date_col = st.selectbox("Date Column", ["None"] + all_cols)
+    value_col = st.selectbox("Numeric Column", num_cols if num_cols else all_cols)
+    category_col = st.selectbox("Category Column", cat_cols if cat_cols else all_cols)
 
-    # ---------------- TYPE FIX ----------------
-    df[revenue_col] = pd.to_numeric(df[revenue_col], errors="coerce")
-    df = df.dropna(subset=[revenue_col])
+    # TYPE FIX
+    df[value_col] = pd.to_numeric(df[value_col], errors="coerce")
 
     if date_col != "None":
         df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+
+    df = df.dropna(subset=[value_col])
+
+    if date_col != "None":
         df = df.dropna(subset=[date_col])
 
-        if not pd.api.types.is_datetime64_any_dtype(df[date_col]):
-            st.warning("⚠ Invalid date column")
-            date_col = "None"
+    # KPIs
+    st.subheader("📌 KPIs")
 
-    # ---------------- KPIs ----------------
-    st.subheader("📌 Key Metrics")
+    total = df[value_col].sum()
+    avg = df[value_col].mean()
 
-    total_rev = df[revenue_col].sum()
-    avg_rev = df[revenue_col].mean()
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total", f"{total:,.0f}")
+    c2.metric("Average", f"{avg:,.2f}")
+    c3.metric("Records", len(df))
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Revenue", f"{total_rev:,.0f}")
-    col2.metric("Average Revenue", f"{avg_rev:,.2f}")
-    col3.metric("Total Records", len(df))
+    # CHARTS
+    st.subheader("📈 Charts")
 
-    # ---------------- CHARTS ----------------
-    st.subheader("📈 Visual Analysis")
-
-    # Revenue Over Time
     if date_col != "None":
-        rev_time_df = (
-            df.groupby(date_col, as_index=False)[revenue_col]
-            .sum()
-            .rename(columns={revenue_col: "Revenue"})
-        )
-        st.plotly_chart(px.line(rev_time_df, x=date_col, y="Revenue"), use_container_width=True)
+        ts = df.groupby(date_col, as_index=False)[value_col].sum()
+        st.plotly_chart(px.line(ts, x=date_col, y=value_col), use_container_width=True)
 
-    # Category Bar
-    cat_df = (
-        df.groupby(category_col, as_index=False)[revenue_col]
-        .sum()
-    )
-    st.plotly_chart(px.bar(cat_df, x=category_col, y=revenue_col), use_container_width=True)
+    cat_df = df.groupby(category_col, as_index=False)[value_col].sum()
 
-    # Pie Chart
-    st.plotly_chart(px.pie(cat_df, names=category_col, values=revenue_col), use_container_width=True)
+    st.plotly_chart(px.bar(cat_df, x=category_col, y=value_col), use_container_width=True)
+    st.plotly_chart(px.pie(cat_df, names=category_col, values=value_col), use_container_width=True)
 
-    # ---------------- ADVANCED ----------------
-    if date_col != "None" and pd.api.types.is_datetime64_any_dtype(df[date_col]):
-
+    # ADVANCED
+    if date_col != "None":
         df["Month"] = df[date_col].dt.to_period("M").astype(str)
-
-        monthly = (
-            df.groupby("Month", as_index=False)[revenue_col]
-            .sum()
-        )
-
-        st.plotly_chart(px.area(monthly, x="Month", y=revenue_col), use_container_width=True)
+        monthly = df.groupby("Month", as_index=False)[value_col].sum()
+        st.plotly_chart(px.area(monthly, x="Month", y=value_col), use_container_width=True)
 
     if len(num_cols) > 1:
         corr = df[num_cols].corr()
         st.plotly_chart(px.imshow(corr, text_auto=True), use_container_width=True)
 
+    # TOP
     st.subheader("🔝 Top Records")
-    st.dataframe(df.sort_values(by=revenue_col, ascending=False).head(10))
+    st.dataframe(df.sort_values(by=value_col, ascending=False).head(10))
 
-    # ---------------- AI INSIGHTS ----------------
+    # AI INSIGHTS
     st.subheader("🤖 AI Insights")
 
     insights = []
 
-    if date_col != "None":
-        growth = rev_time_df["Revenue"].pct_change().mean() * 100
-        insights.append(f"Average revenue growth: {growth:.2f}%")
+    if len(df) > 1:
+        trend = df[value_col].pct_change().mean() * 100
+        insights.append(f"Average growth: {trend:.2f}%")
 
-    top_cat = cat_df.sort_values(by=revenue_col, ascending=False).iloc[0][category_col]
-    insights.append(f"Top category: {top_cat}")
-    insights.append(f"Total revenue: {total_rev:,.0f}")
+    if len(cat_df) > 0:
+        top = cat_df.sort_values(by=value_col, ascending=False).iloc[0][category_col]
+        insights.append(f"Top category: {top}")
+
+    insights.append(f"Total value: {total:,.0f}")
 
     for i in insights:
         st.write("👉", i)
 
-    # ---------------- PDF EXPORT ----------------
+    # PDF
     st.subheader("📄 Export Report")
 
-    if st.button("Generate PDF Report"):
-
+    if st.button("Generate PDF"):
         pdf = FPDF()
         pdf.add_page()
         pdf.set_font("Arial", size=12)
 
-        pdf.cell(200, 10, txt="Data Analysis Report", ln=True)
+        pdf.cell(200, 10, "AI Data Report", ln=True)
 
         for i in insights:
-            pdf.cell(200, 10, txt=i, ln=True)
+            pdf.cell(200, 10, clean_text(i), ln=True)
 
-        file_path = "report.pdf"
-        pdf.output(file_path)
+        pdf.output("report.pdf")
 
-        with open(file_path, "rb") as f:
-            st.download_button("Download PDF", f, file_name="report.pdf")
+        with open("report.pdf", "rb") as f:
+            st.download_button("Download PDF", f, "report.pdf")
 
 else:
-    st.info("👆 Upload a CSV file to start")
+    st.info("👆 Upload CSV or Excel to begin")
